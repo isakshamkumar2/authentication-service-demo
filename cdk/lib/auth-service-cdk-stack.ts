@@ -1,10 +1,10 @@
+import * as path from 'path';
 import { Stack, StackProps, RemovalPolicy, CfnOutput } from 'aws-cdk-lib';
 import { Vpc, Peer, Port, SecurityGroup, UserData, InstanceType, InstanceClass, InstanceSize, MachineImage, SubnetType } from 'aws-cdk-lib/aws-ec2';
 import { Role, ServicePrincipal, ManagedPolicy } from 'aws-cdk-lib/aws-iam';
-import { ApplicationProtocol, ApplicationLoadBalancer } from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import { ApplicationProtocol } from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { BucketDeployment, Source } from 'aws-cdk-lib/aws-s3-deployment';
 import { Construct } from 'constructs';
-import * as path from 'path';
 import {
   createDefaultVpc, STAGES, createDefaultSecurityGroup, createIAMRole,
   attachManagedPolicyToRole, MANAGED_POLICIES, createPolicyStatement,
@@ -57,46 +57,48 @@ export class AuthServiceCdkStack extends Stack {
     );
     attachCustomPolicyStatementsToRole(role, [s3PolicyStatement]);
 
+    // Deploy source code
     new BucketDeployment(this, 'DeployAuthServiceFiles', {
       sources: [Source.asset(path.join(__dirname, '..', '..', 'src'))],
       destinationBucket: authServiceBucket,
       destinationKeyPrefix: 'app',
+      memoryLimit: 1024,
     });
 
-    new BucketDeployment(this, 'DeployRequirements', {
-      sources: [Source.asset(path.join(__dirname, '..', '..'))],
-      destinationBucket: authServiceBucket,
-      destinationKeyPrefix: 'requirements',
-      exclude: ['*', '!requirements.txt'],
-    });
-
+    // Deploy wheels.zip
     new BucketDeployment(this, 'DeployWheels', {
-      sources: [Source.asset(path.join(__dirname, '..', '..', 'src', 'wheels'))],
+      sources: [Source.asset(path.join(__dirname, '..', '..', 'wheels.zip'))],
       destinationBucket: authServiceBucket,
       destinationKeyPrefix: 'wheels',
+      memoryLimit: 1024,
+    });
+
+    // Deploy setup script
+    new BucketDeployment(this, 'DeploySetupScript', {
+      sources: [Source.asset(path.join(__dirname, '..', 'scripts'))],
+      destinationBucket: authServiceBucket,
+      destinationKeyPrefix: 'scripts',
+      memoryLimit: 512,
     });
 
     const userData = UserData.forLinux();
     userData.addCommands(
       '#!/bin/bash',
-      'set -e',
+      'set -ex',
+      'exec > >(tee /var/log/user-data.log) 2>&1',
+      'echo "Starting user data script"',
       'yum update -y',
-      'yum install -y python3 python3-pip awscli',
-      'mkdir -p /home/ec2-user/auth-service',
-      'cd /home/ec2-user/auth-service',
-      `aws s3 cp s3://${authServiceBucket.bucketName}/app/ . --recursive`,
-      `aws s3 cp s3://${authServiceBucket.bucketName}/requirements/requirements.txt .`,
-      `aws s3 cp s3://${authServiceBucket.bucketName}/wheels/ ./wheels/ --recursive`,
-      'pip3 install -r requirements.txt',
-      'pip3 install wheels/*.whl',
-      `export APP_PORT=${PORT}`,
-      `nohup gunicorn --workers 3 --bind 0.0.0.0:${PORT} app:app > /dev/null 2>&1 &`
+      'yum install -y aws-cli unzip',
+      `aws s3 cp s3://${authServiceBucket.bucketName}/scripts/setup.sh /home/ec2-user/setup.sh`,
+      'chmod +x /home/ec2-user/setup.sh',
+      `sudo -u ec2-user /home/ec2-user/setup.sh ${authServiceBucket.bucketName} ${PORT}`,
+      'echo "User data script completed"'
     );
 
     const autoScalingGroup = createDefaultAutoScalingGroup(this, {
       asgName: 'AuthServiceASG',
       vpc,
-      instanceType: InstanceType.of(InstanceClass.T2, InstanceSize.MICRO),
+      instanceType: InstanceType.of(InstanceClass.T3, InstanceSize.SMALL),
       machineImage: MachineImage.latestAmazonLinux2(),
       userData,
       minCapacity: 1,
@@ -106,7 +108,7 @@ export class AuthServiceCdkStack extends Stack {
       stage: STAGES.BETA,
       keyName: 'authService',
       securityGroup,
-      role
+      role,
     });
 
     const { loadBalancer } = createLoadBalancerWithTargets(this, {
@@ -119,7 +121,7 @@ export class AuthServiceCdkStack extends Stack {
         name: 'AuthServiceTarget',
         port: PORT,
         targets: [autoScalingGroup],
-        healthCheckPath: '/metrics',
+        healthCheckPath: '/health',
         protocol: ApplicationProtocol.HTTP,
       }]
     });
