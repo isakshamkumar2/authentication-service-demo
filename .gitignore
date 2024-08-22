@@ -3,5 +3,13 @@ __pycache__/
 *.pyo
 .env
 *.log
-/wheels
-*.zip
+
+.idea
+.ruff_cache
+venv
+
+*.iml
+# Elastic Beanstalk Files
+.elasticbeanstalk/*
+!.elasticbeanstalk/*.cfg.yml
+!.elasticbeanstalk/*.global.yml

@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from prometheus_flask_exporter import PrometheusMetrics
 from typing import Any, Dict
 import logging
+from flask_cors import CORS
 
 from src.constants import API_PREFIX, API_VERSION
 from src.service import (
@@ -13,6 +14,7 @@ from src.service import (
 from src.local_utils import extract_email_from_token
 
 app = Flask(__name__)
+CORS(app)
 metrics = PrometheusMetrics(app)
 
 # static information as metric
@@ -51,6 +53,8 @@ def signin_with_google() -> Any:
     # Step 1 - Get Authorization code from request
     authorization_code: str = data["authorization_code"]
     # Step 2 - Request authorization with Google
+    logger.info(f"Received redirect_uri: {data.get('redirect_uri')}")  # Add this line
+
     try:
         access_token, refresh_token, id_token = authorize_with_google(authorization_code)
     except Exception:
@@ -80,6 +84,20 @@ def signin_with_google() -> Any:
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "healthy"}), 200
+
+
+@app.route("/login", methods=["GET"])
+def google_auth_login_redirect():
+    return "Login successful. You can close this window."
+
+@app.route("/signup", methods=["GET"])
+def google_auth_signup_redirect():
+    return "Signup successful. You can close this window."
+
+@app.route(f"/{API_PREFIX}/{API_VERSION}/signinWithGoogle", methods=["GET"])
+def google_auth_backend_redirect():
+    # This route is for backend processing if needed
+    return "Authentication successful. You can close this window."
 
 if __name__ == "__main__":
     app.run()
