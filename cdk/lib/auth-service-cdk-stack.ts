@@ -1,133 +1,81 @@
-import * as path from 'path';
-import { Stack, StackProps, RemovalPolicy, CfnOutput } from 'aws-cdk-lib';
-import { Vpc, Peer, Port, SecurityGroup, UserData, InstanceType, InstanceClass, InstanceSize, MachineImage, SubnetType } from 'aws-cdk-lib/aws-ec2';
-import { Role, ServicePrincipal, ManagedPolicy } from 'aws-cdk-lib/aws-iam';
-import { ApplicationProtocol } from 'aws-cdk-lib/aws-elasticloadbalancingv2';
-import { BucketDeployment, Source } from 'aws-cdk-lib/aws-s3-deployment';
 import { Construct } from 'constructs';
+import { Stack, CfnOutput, StackProps } from 'aws-cdk-lib';
+import { Bucket } from 'aws-cdk-lib/aws-s3';
+import { Port, InstanceType, InstanceClass, InstanceSize,MachineImage } from 'aws-cdk-lib/aws-ec2';
 import {
-  createDefaultVpc, STAGES, createDefaultSecurityGroup, createIAMRole,
-  attachManagedPolicyToRole, MANAGED_POLICIES, createPolicyStatement,
-  attachCustomPolicyStatementsToRole, createS3Bucket,
-  createLoadBalancerWithTargets, createDefaultAutoScalingGroup
+  createDefaultVpc,
+  createDefaultSecurityGroup,
+  addIngressRule,
+  createUserData,
+  createDefaultEc2Instance,
+  attachSSMPolicyToEC2Instance,
+  STAGES,
+  ALLOWED_HTTP_PORT,
 } from '@genflowly/cdk-commons';
 
-export class AuthServiceCdkStack extends Stack {
+export class AuthServiceStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
-    const PORT = 5000;
+    const stage = STAGES.BETA;
 
-    const vpc = createDefaultVpc('AuthServiceVpc', 'AuthServiceVPC', 2, this, STAGES.BETA, true);
+    const vpc = createDefaultVpc('AuthServiceVPC', 'AuthServiceVPC', 2, this, stage);
 
     const securityGroup = createDefaultSecurityGroup(
-      'AuthServiceSecurityGroup',
+      'AuthServiceSG',
       vpc,
-      'Security group for AuthService',
-      STAGES.BETA,
-      this,
-    );
-
-    securityGroup.addIngressRule(Peer.anyIpv4(), Port.tcp(80), 'Allow HTTP traffic');
-    securityGroup.addIngressRule(Peer.anyIpv4(), Port.tcp(PORT), 'Allow Flask app traffic');
-    securityGroup.addIngressRule(Peer.anyIpv4(), Port.tcp(22), 'Allow SSH access');
-
-    const role = createIAMRole(
-      'AuthServiceEC2Role',
-      new ServicePrincipal('ec2.amazonaws.com'),
-      STAGES.BETA,
+      'Allow HTTP and SSH traffic',
+      stage,
       this
     );
-    
-    attachManagedPolicyToRole(role, MANAGED_POLICIES.SSM_MANAGED_INSTANCE_CORE);
-    role.addManagedPolicy(ManagedPolicy.fromAwsManagedPolicyName('AmazonDynamoDBFullAccess'));
-    role.addManagedPolicy(ManagedPolicy.fromAwsManagedPolicyName('SecretsManagerReadWrite'));
 
-    const authServiceBucket = createS3Bucket(this, {
-      bucketName: `auth-service-${STAGES.BETA}`,
-      removalPolicy: RemovalPolicy.DESTROY,
-      stage: STAGES.BETA,
-      autoDeleteObjects: true
-    });
-    authServiceBucket.grantRead(role);
+    addIngressRule(securityGroup, Port.tcp(ALLOWED_HTTP_PORT), 'Allow HTTP traffic');
+    addIngressRule(securityGroup, Port.tcp(22), 'Allow SSH access');
 
-    const s3PolicyStatement = createPolicyStatement(
-      ['s3:ListBucket', 's3:GetObject', 's3:PutObject', 's3:DeleteObject'],
-      [authServiceBucket.bucketArn, `${authServiceBucket.bucketArn}/*`]
-    );
-    attachCustomPolicyStatementsToRole(role, [s3PolicyStatement]);
+    const wheelBucket = Bucket.fromBucketName(this, 'ExistingBucket', 'package-deployment-bucket-beta');
 
-    // Deploy source code
-    new BucketDeployment(this, 'DeployAuthServiceFiles', {
-      sources: [Source.asset(path.join(__dirname, '..', '..', 'src'))],
-      destinationBucket: authServiceBucket,
-      destinationKeyPrefix: 'app',
-      memoryLimit: 1024,
-    });
+    const userDataCommands = [
+      'sudo yum update -y',
+      'sudo yum install -y nginx',
+      'sudo amazon-linux-extras enable python3.10',
+      'sudo yum install -y python3.10',
+      'sudo update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1',
+      'sudo update-alternatives --set python3 /usr/bin/python3.10',
+      'python3 -m ensurepip --upgrade',
+      'python3 -m pip install --upgrade pip',
+      'python3 -m pip install gunicorn',
+      'mkdir -p /home/ec2-user/auth-service',
+      `aws s3 sync s3://${wheelBucket.bucketName}/wheelhouse /home/ec2-user/auth-service/wheelhouse`,
+      `aws s3 cp s3://${wheelBucket.bucketName}/requirements.txt /home/ec2-user/auth-service/`,
+      `aws s3 sync s3://${wheelBucket.bucketName}/src /home/ec2-user/auth-service/src`,
+      'sudo python3 -m pip install --no-index --find-links=/home/ec2-user/auth-service/wheelhouse -r /home/ec2-user/auth-service/requirements.txt',
+      'sudo systemctl start nginx',
+      'sudo systemctl enable nginx',
+      'echo "server { listen 80; location / { proxy_pass http://127.0.0.1:8000; } }" | sudo tee /etc/nginx/conf.d/auth-service.conf',
+      'sudo nginx -s reload',
+      'gunicorn --bind 127.0.0.1:8000 src.app:app -D --chdir /home/ec2-user/auth-service'
+    ];
+    const userData = createUserData(userDataCommands);
 
-    // Deploy wheels.zip
-    new BucketDeployment(this, 'DeployWheels', {
-      sources: [Source.asset(path.join(__dirname, '..', '..', 'wheels.zip'))],
-      destinationBucket: authServiceBucket,
-      destinationKeyPrefix: 'wheels',
-      memoryLimit: 1024,
-    });
-
-    // Deploy setup script
-    new BucketDeployment(this, 'DeploySetupScript', {
-      sources: [Source.asset(path.join(__dirname, '..', 'scripts'))],
-      destinationBucket: authServiceBucket,
-      destinationKeyPrefix: 'scripts',
-      memoryLimit: 512,
-    });
-
-    const userData = UserData.forLinux();
-    userData.addCommands(
-      '#!/bin/bash',
-      'set -ex',
-      'exec > >(tee /var/log/user-data.log) 2>&1',
-      'echo "Starting user data script"',
-      'yum update -y',
-      'yum install -y aws-cli unzip',
-      `aws s3 cp s3://${authServiceBucket.bucketName}/scripts/setup.sh /home/ec2-user/setup.sh`,
-      'chmod +x /home/ec2-user/setup.sh',
-      `sudo -u ec2-user /home/ec2-user/setup.sh ${authServiceBucket.bucketName} ${PORT}`,
-      'echo "User data script completed"'
-    );
-
-    const autoScalingGroup = createDefaultAutoScalingGroup(this, {
-      asgName: 'AuthServiceASG',
+    const instance = createDefaultEc2Instance(
+      'AuthServiceInstance',
+      InstanceType.of(InstanceClass.T3, InstanceSize.MICRO).toString(),
+      MachineImage.latestAmazonLinux2().getImage(this).imageId,
       vpc,
-      instanceType: InstanceType.of(InstanceClass.T3, InstanceSize.SMALL),
-      machineImage: MachineImage.latestAmazonLinux2(),
-      userData,
-      minCapacity: 1,
-      maxCapacity: 1,
-      desiredCapacity: 1,
-      subnetType: SubnetType.PUBLIC,
-      stage: STAGES.BETA,
-      keyName: 'authService',
       securityGroup,
-      role,
-    });
+      userData.render(),
+      this.region,
+      stage,
+      this
+    );
 
-    const { loadBalancer } = createLoadBalancerWithTargets(this, {
-      lbName: 'AuthServiceALB',
-      vpc,
-      stage: STAGES.BETA,
-      internetFacing: true,
-      listenerPort: 80,
-      targetGroups: [{
-        name: 'AuthServiceTarget',
-        port: PORT,
-        targets: [autoScalingGroup],
-        healthCheckPath: '/health',
-        protocol: ApplicationProtocol.HTTP,
-      }]
-    });
+    wheelBucket.grantRead(instance.role);
 
-    new CfnOutput(this, 'AuthLoadBalancerDNS', {
-      value: loadBalancer.loadBalancerDnsName
+    attachSSMPolicyToEC2Instance(instance);
+
+    new CfnOutput(this, 'InstancePublicIp', {
+      value: instance.instancePublicIp,
+      description: 'Public IP address of the EC2 instance',
     });
   }
 }
