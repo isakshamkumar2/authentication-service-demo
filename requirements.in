@@ -10,6 +10,6 @@ pip-tools==7.4.1
 prometheus_client==0.20.0
 prometheus_flask_exporter==0.23.1
 pyproject_hooks==1.1.0
-Werkzeug==3.0.3
+Werkzeug>=2.3.7
 genflowly-lambda-utils
 google-auth-oauthlib
