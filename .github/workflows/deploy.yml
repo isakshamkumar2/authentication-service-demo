@@ -2,7 +2,7 @@ name: Deploy Auth Service
 
 on:
   push:
-    branches: [ cdk-test-3 ]
+    branches: [ main ]
 
 jobs:
   deploy:
@@ -52,6 +52,7 @@ jobs:
         cd cdk
         echo "AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}" >> .env
         echo "AWS_REGION=${{ secrets.AWS_REGION }}" >> .env
+        echo "APP_ENV=BETA" >> .env
 
     - name: CDK Bootstrap
       run: |

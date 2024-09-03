@@ -1,8 +1,11 @@
 from flask import Flask, request, jsonify
 from prometheus_flask_exporter import PrometheusMetrics
+from flask_httpauth import HTTPBasicAuth
+from werkzeug.security import generate_password_hash, check_password_hash
 from typing import Any, Dict
 import logging
 from flask_cors import CORS
+import os
 
 from src.constants import API_PREFIX, API_VERSION
 from src.service import (
@@ -16,7 +19,18 @@ from src.local_utils import extract_email_from_token
 app = Flask(__name__)
 CORS(app)
 metrics = PrometheusMetrics(app)
-
+auth = HTTPBasicAuth()
+METRICS_USERNAME = os.environ.get('METRICS_USERNAME')
+METRICS_PASSWORD = os.environ.get('METRICS_PASSWORD')
+if not METRICS_USERNAME or not METRICS_PASSWORD:
+    raise ValueError("METRICS_USERNAME and METRICS_PASSWORD must be set")
+users = {
+    METRICS_USERNAME: generate_password_hash(METRICS_PASSWORD)
+}
+@auth.verify_password
+def verify_password(username, password):
+    if username in users and check_password_hash(users.get(username), password):
+        return username
 # static information as metric
 metrics.info("authorization_service", "Metrics for Sign in with Google and Apple", version="1.0.0")
 
@@ -31,7 +45,10 @@ metrics.register_default(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
+@app.route('/metrics')
+@auth.login_required
+def metrics_endpoint():
+    return metrics.generate_latest()
 @app.route(f"/{API_PREFIX}/{API_VERSION}/signinWithGoogle", methods=["POST"])
 @metrics.gauge('in_progress', 'Long running requests in progress')
 def signin_with_google() -> Any:
