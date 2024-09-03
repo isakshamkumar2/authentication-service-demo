@@ -2,7 +2,7 @@ name: Deploy Auth Service
 
 on:
   push:
-    branches: [ cdk-test-3 ]
+    branches: [ main ]
 
 jobs:
   deploy:

@@ -3,8 +3,9 @@ import { Instance, InstanceType, InstanceClass, InstanceSize, Vpc, SecurityGroup
 import { Bucket } from 'aws-cdk-lib/aws-s3';
 import { ITable } from 'aws-cdk-lib/aws-dynamodb';
 import { createUserData, createDefaultEc2Instance, attachSSMPolicyToEC2Instance, STAGES, createAndAssignDefaultElasticIp } from '@genflowly/cdk-commons';
-import { AUTHENTICATION_SERVICE_NAME, DELMITER, PACKAGE_DEPLOYMENT_BUCKET_ID, PACKAGE_DEPLOYMENT_BUCKET_BETA_NAME } from '../constants';
-
+import { AUTHENTICATION_SERVICE_NAME, DELMITER, PACKAGE_DEPLOYMENT_BUCKET_ID, PACKAGE_DEPLOYMENT_BUCKET_BETA_NAME, DOMAINS } from '../constants';
+import * as dotenv from 'dotenv';
+dotenv.config();
 export interface AuthenticationServiceEc2InstanceProps {
   vpc: Vpc;
   securityGroup: SecurityGroup;
@@ -16,7 +17,7 @@ export class AuthenticationServiceEc2Instance extends Construct {
 
   constructor(scope: Construct, id: string, props: AuthenticationServiceEc2InstanceProps) {
     super(scope, id);
-
+    const DOMAIN = DOMAINS.BETA;
     const stage = STAGES.BETA;
     const wheelBucket = Bucket.fromBucketName(this, PACKAGE_DEPLOYMENT_BUCKET_ID, PACKAGE_DEPLOYMENT_BUCKET_BETA_NAME);
     const userDataCommands = [
@@ -33,17 +34,18 @@ export class AuthenticationServiceEc2Instance extends Construct {
       'pip install --no-index --find-links=/home/ubuntu/auth-service/src/wheels -r /home/ubuntu/auth-service/requirements.txt',
       'sudo systemctl start nginx',
       'sudo systemctl enable nginx',
-      'echo "server { \
-          listen 80; \
-          server_name genflowly.com; \
-          location / { \
-              proxy_pass http://127.0.0.1:8000; \
-              proxy_set_header Host \\$host; \
-              proxy_set_header X-Real-IP \\$remote_addr; \
-              proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for; \
-              proxy_set_header X-Forwarded-Proto \\$scheme; \
-          } \
-      }" | sudo tee /etc/nginx/sites-available/auth-service',
+      `echo "DOMAIN=${DOMAIN}" | sudo tee -a /etc/environment`,
+      `echo "server { \\
+          listen 80; \\
+          server_name ${DOMAIN}; \\
+          location / { \\
+              proxy_pass http://127.0.0.1:8000; \\
+              proxy_set_header Host \\$host; \\
+              proxy_set_header X-Real-IP \\$remote_addr; \\
+              proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for; \\
+              proxy_set_header X-Forwarded-Proto \\$scheme; \\
+          } \\
+      }" | sudo tee /etc/nginx/sites-available/auth-service`,
       'sudo ln -sf /etc/nginx/sites-available/auth-service /etc/nginx/sites-enabled/',
       'sudo rm -f /etc/nginx/sites-enabled/default',
       'sudo nginx -t && sudo systemctl restart nginx',
@@ -51,19 +53,45 @@ export class AuthenticationServiceEc2Instance extends Construct {
       'echo "export AWS_DEFAULT_REGION=us-east-1" | sudo tee -a /etc/environment',
       `sed -i 's/AUTHENTICATION_DDB_TABLE = "user_authentication"/AUTHENTICATION_DDB_TABLE = "${props.dynamoDbTable.tableName}"/g' /home/ubuntu/auth-service/src/constants.py`,
       'cd /home/ubuntu/auth-service && /home/ubuntu/auth-service/venv/bin/gunicorn --bind 127.0.0.1:8000 src.app:app -D --chdir /home/ubuntu/auth-service',
-      'echo "#!/bin/bash\n\
-    if host genflowly.com | grep -q \\"has address\\"; then\n\
-        if sudo certbot --nginx -d genflowly.com --non-interactive --agree-tos --email authentication-beta@genflowly.com; then\n\
-            echo \\"HTTPS configuration complete\\" >> /home/ubuntu/https_setup.log\n\
-        else\n\
-            echo \\"Certificate generation failed. Check DNS and try again.\\" >> /home/ubuntu/https_setup.log\n\
-        fi\n\
-    else\n\
-        echo \\"Domain not yet pointing to this instance. HTTPS setup skipped.\\" >> /home/ubuntu/https_setup.log\n\
-    fi\n\
-    sudo systemctl restart nginx" | tee /home/ubuntu/setup_https.sh',
+      'cat << \'EOT\' > /home/ubuntu/setup_https.sh',
+      '#!/bin/bash',
+      'source /etc/environment',
+      'if host $DOMAIN | grep -q "has address"; then \\',
+      '    if sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos --email authentication-beta@genflowly.com; then \\',
+      '        cat << EOF | sudo tee /etc/nginx/sites-available/auth-service',
+      'server {',
+      '    listen 80;',
+      '    server_name $DOMAIN;',
+      '    return 301 https://\\$server_name\\$request_uri;',
+      '}',
+      '',
+      'server {',
+      '    listen 443 ssl;',
+      '    server_name $DOMAIN;',
+      '',
+      '    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;',
+      '    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;',
+      '',
+      '    location / {',
+      '        proxy_pass http://127.0.0.1:8000;',
+      '        proxy_set_header Host \\$host;',
+      '        proxy_set_header X-Real-IP \\$remote_addr;',
+      '        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;',
+      '        proxy_set_header X-Forwarded-Proto \\$scheme;',
+      '    }',
+      '}',
+      'EOF',
+      '        sudo nginx -t && sudo systemctl restart nginx',
+      '        echo "HTTPS configuration complete" >> /home/ubuntu/https_setup.log',
+      '    else \\',
+      '        echo "Certificate generation failed. Check DNS and try again." >> /home/ubuntu/https_setup.log',
+      '    fi',
+      'else \\',
+      '    echo "Domain $DOMAIN not yet pointing to this instance. HTTPS setup skipped." >> /home/ubuntu/https_setup.log',
+      'fi',
+      'EOT',
       'chmod +x /home/ubuntu/setup_https.sh',
-      'echo "@reboot /home/ubuntu/setup_https.sh" | crontab -',
+      '(crontab -l 2>/dev/null; echo "@reboot /home/ubuntu/setup_https.sh") | crontab -',
       '/home/ubuntu/setup_https.sh'
     ];
     const userData = createUserData(userDataCommands);
