@@ -2,7 +2,7 @@ name: Deploy Auth Service
 
 on:
   push:
-    branches: [ main ]
+    branches: [ cdk-4 ]
 
 jobs:
   deploy:
@@ -19,6 +19,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install wheel
+        pip install -r requirements.txt
         pip wheel -r requirements.txt -w ./src/wheels
     
     - name: Configure AWS credentials
@@ -32,8 +33,7 @@ jobs:
       run: |
         aws s3 sync ./src/wheels s3://package-deployment-bucket-beta/wheelhouse/ 
         aws s3 cp requirements.txt s3://package-deployment-bucket-beta/ 
-        aws s3 sync ./src s3://package-deployment-bucket-beta/src/ 
-    
+        aws s3 sync ./src s3://package-deployment-bucket-beta/src/ --exclude "wheels/*"    
     - name: Set up Node.js
       uses: actions/setup-node@v2
       with:
@@ -52,6 +52,7 @@ jobs:
         cd cdk
         echo "AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}" >> .env
         echo "AWS_REGION=${{ secrets.AWS_REGION }}" >> .env
+        echo "APP_ENV=BETA" >> .env
 
     - name: CDK Bootstrap
       run: |
