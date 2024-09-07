@@ -36,16 +36,16 @@ export class AuthenticationServiceEc2Instance extends Construct {
     const wheelBucket = Bucket.fromBucketName(this, PACKAGE_DEPLOYMENT_BUCKET_ID, PACKAGE_DEPLOYMENT_BUCKET_BETA_NAME);
     const userDataCommands = [
       'sudo apt update',
-      'sudo apt install -y nginx python3-pip python3-venv awscli certbot python3-certbot-nginx',
+      'sudo apt install -y nginx python3-pip python3-venv awscli certbot python3-certbot-nginx jq',
       'mkdir -p /home/ubuntu/auth-service/src',
       'python3 -m venv /home/ubuntu/auth-service/venv',
       'source /home/ubuntu/auth-service/venv/bin/activate',
       'pip install --upgrade pip',
       'pip install flask-cors gunicorn',
-      `secret=$(aws secretsmanager get-secret-value --secret-id ${metricsSecret.secretName} --query SecretString --output text)`,
+      `secret=$(aws secretsmanager get-secret-value --secret-id ${metricsSecret.secretName} --region us-east-1 --query SecretString --output text)`,
       `echo "METRICS_USERNAME=$(echo $secret | jq -r '.METRICS_USERNAME')" | sudo tee -a /etc/environment`,
       `echo "METRICS_PASSWORD=$(echo $secret | jq -r '.METRICS_PASSWORD')" | sudo tee -a /etc/environment`,
-      'sudo systemctl daemon-reload',
+      'echo "export AWS_DEFAULT_REGION=us-east-1" | sudo tee -a /home/ubuntu/.bashrc',
       'source /etc/environment',
       `aws s3 sync s3://${wheelBucket.bucketName}/src /home/ubuntu/auth-service/src`,
       `aws s3 sync s3://${wheelBucket.bucketName}/wheelhouse /home/ubuntu/auth-service/src/wheels`,
@@ -55,6 +55,7 @@ export class AuthenticationServiceEc2Instance extends Construct {
       'sudo systemctl enable nginx',
       `echo "DOMAIN=${DOMAIN}" | sudo tee -a /etc/environment`,
       `echo "APP_ENV=${appEnv}" | sudo tee -a /etc/environment`,
+      // Nginx configuration
       `echo "server { \\
           listen 80; \\
           server_name ${DOMAIN}; \\
@@ -69,9 +70,8 @@ export class AuthenticationServiceEc2Instance extends Construct {
       'sudo ln -sf /etc/nginx/sites-available/auth-service /etc/nginx/sites-enabled/',
       'sudo rm -f /etc/nginx/sites-enabled/default',
       'sudo nginx -t && sudo systemctl restart nginx',
-      'echo "export AWS_DEFAULT_REGION=us-east-1" >> /home/ubuntu/.bashrc',
-      'echo "export AWS_DEFAULT_REGION=us-east-1" | sudo tee -a /etc/environment',
       `sed -i 's/AUTHENTICATION_DDB_TABLE = "user_authentication"/AUTHENTICATION_DDB_TABLE = "${props.dynamoDbTable.tableName}"/g' /home/ubuntu/auth-service/src/constants.py`,
+      // Gunicorn service configuration
       'cat << EOT | sudo tee /etc/systemd/system/auth-service.service',
       '[Unit]',
       'Description=Gunicorn instance to serve auth service',
@@ -79,10 +79,11 @@ export class AuthenticationServiceEc2Instance extends Construct {
       '',
       '[Service]',
       'User=ubuntu',
+      'Group=ubuntu',
       'WorkingDirectory=/home/ubuntu/auth-service',
       'Environment="PATH=/home/ubuntu/auth-service/venv/bin"',
       'EnvironmentFile=/etc/environment',
-      'ExecStart=/home/ubuntu/auth-service/venv/bin/gunicorn --workers 3 --bind 127.0.0.1:8000 src.app:app',
+      'ExecStart=/home/ubuntu/auth-service/venv/bin/gunicorn --workers 3 --bind 127.0.0.1:8000 src.app:app --log-level debug --error-logfile /home/ubuntu/auth-service/gunicorn-error.log --access-logfile /home/ubuntu/auth-service/gunicorn-access.log',
       'Restart=always',
       '',
       '[Install]',
@@ -91,6 +92,7 @@ export class AuthenticationServiceEc2Instance extends Construct {
       'sudo systemctl start auth-service',
       'sudo systemctl enable auth-service',
       'echo "Created and started auth-service systemd service"',
+      // HTTPS setup script
       'cat << \'EOT\' > /home/ubuntu/setup_https.sh',
       '#!/bin/bash',
       'exec > >(tee -a /home/ubuntu/https_setup.log) 2>&1',

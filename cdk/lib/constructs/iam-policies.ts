@@ -8,6 +8,7 @@ import {
   attachCustomPolicyStatementsToPrincipalPolicy,
   MANAGED_POLICIES
 } from '@genflowly/cdk-commons';
+import { ManagedPolicy } from 'aws-cdk-lib/aws-iam';
 
 export interface AuthenticationServiceIamPoliciesProps {
   ec2Instance: Instance;
@@ -51,7 +52,14 @@ export class AuthenticationServiceIamPolicies extends Construct {
 
     attachManagedPolicyToRole(props.ec2Instance.role, MANAGED_POLICIES.AmazonDynamoDBFullAccess);
     attachManagedPolicyToRole(props.ec2Instance.role, MANAGED_POLICIES.SecretsManagerReadWrite);
-
+    // attachManagedPolicyToRole(props.ec2Instance.role, "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore");
+    // attachManagedPolicyToRole(props.ec2Instance.role, MANAGED_POLICIES.AmazonSSMFullAccess);
+    props.ec2Instance.role.addManagedPolicy(
+      ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore')
+    );
+    props.ec2Instance.role.addManagedPolicy(
+      ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMFullAccess') // Optional, based on your use case
+    );
     attachCustomPolicyStatementsToPrincipalPolicy(props.ec2Instance.role, [
       s3ListBucketPolicy,
       s3GetObjectPolicy,

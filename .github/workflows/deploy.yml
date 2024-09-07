@@ -2,7 +2,7 @@ name: Deploy Auth Service
 
 on:
   push:
-    branches: [ cdk-4 ]
+    branches: [ cdk-5 ]
 
 jobs:
   deploy:
@@ -19,7 +19,6 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install wheel
-        pip install -r requirements.txt
         pip wheel -r requirements.txt -w ./src/wheels
     
     - name: Configure AWS credentials
