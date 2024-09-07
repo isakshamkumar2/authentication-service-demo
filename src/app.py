@@ -95,7 +95,7 @@ def signin_with_google() -> Any:
 
     return response
 
-
+e
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "healthy"}), 200
