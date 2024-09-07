@@ -45,7 +45,7 @@ export class AuthenticationServiceEc2Instance extends Construct {
       `secret=$(aws secretsmanager get-secret-value --secret-id ${metricsSecret.secretName} --region us-east-1 --query SecretString --output text)`,
       `echo "METRICS_USERNAME=$(echo $secret | jq -r '.METRICS_USERNAME')" | sudo tee -a /etc/environment`,
       `echo "METRICS_PASSWORD=$(echo $secret | jq -r '.METRICS_PASSWORD')" | sudo tee -a /etc/environment`,
-      'echo "export AWS_DEFAULT_REGION=us-east-1" | sudo tee -a /home/ubuntu/.bashrc',
+      'echo  "export AWS_DEFAULT_REGION=us-east-1" | sudo tee -a /home/ubuntu/.bashrc',
       'source /etc/environment',
       `aws s3 sync s3://${wheelBucket.bucketName}/src /home/ubuntu/auth-service/src`,
       `aws s3 sync s3://${wheelBucket.bucketName}/wheelhouse /home/ubuntu/auth-service/src/wheels`,
