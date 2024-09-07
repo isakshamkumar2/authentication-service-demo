@@ -50,16 +50,20 @@ export class AuthenticationServiceIamPolicies extends Construct {
       [props.dynamoDbTable.tableArn]
     );
 
+    // Attach managed policies
     attachManagedPolicyToRole(props.ec2Instance.role, MANAGED_POLICIES.AmazonDynamoDBFullAccess);
     attachManagedPolicyToRole(props.ec2Instance.role, MANAGED_POLICIES.SecretsManagerReadWrite);
-    // attachManagedPolicyToRole(props.ec2Instance.role, "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore");
-    // attachManagedPolicyToRole(props.ec2Instance.role, MANAGED_POLICIES.AmazonSSMFullAccess);
     props.ec2Instance.role.addManagedPolicy(
       ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore')
     );
     props.ec2Instance.role.addManagedPolicy(
-      ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMFullAccess') // Optional, based on your use case
+      ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMFullAccess')
     );
+    // props.ec2Instance.role.addManagedPolicy(
+    //   ManagedPolicy.fromAwsManagedPolicyName('AmazonEC2RoleforSSM')
+    // );
+
+    // Attach custom policy statements
     attachCustomPolicyStatementsToPrincipalPolicy(props.ec2Instance.role, [
       s3ListBucketPolicy,
       s3GetObjectPolicy,
@@ -67,4 +71,4 @@ export class AuthenticationServiceIamPolicies extends Construct {
       dynamoDbPolicy
     ]);
   }
-} 
+}

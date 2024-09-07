@@ -1,11 +1,12 @@
 import { Construct } from 'constructs';
-import { Instance, InstanceType, InstanceClass, InstanceSize, Vpc, SecurityGroup, UserData } from 'aws-cdk-lib/aws-ec2';
+import { Instance, InstanceType, InstanceClass, InstanceSize, Vpc, SecurityGroup } from 'aws-cdk-lib/aws-ec2';
 import { Bucket } from 'aws-cdk-lib/aws-s3';
 import { ITable } from 'aws-cdk-lib/aws-dynamodb';
-import { createUserData, createDefaultEc2Instance, attachSSMPolicyToEC2Instance, STAGES, createAndAssignDefaultElasticIp } from '@genflowly/cdk-commons';
+import { createUserData, createDefaultEc2Instance, STAGES, createAndAssignDefaultElasticIp } from '@genflowly/cdk-commons';
 import { AUTHENTICATION_SERVICE_NAME, DELMITER, PACKAGE_DEPLOYMENT_BUCKET_ID, PACKAGE_DEPLOYMENT_BUCKET_BETA_NAME, DOMAINS } from '../constants';
 import * as dotenv from 'dotenv';
 import { Secret } from 'aws-cdk-lib/aws-secretsmanager';
+
 dotenv.config();
 
 export interface AuthenticationServiceEc2InstanceProps {
@@ -34,44 +35,35 @@ export class AuthenticationServiceEc2Instance extends Construct {
     const metricsSecret = Secret.fromSecretNameV2(this, 'MetricsCredentials', 'authentication_secrets');
     const stage = STAGES.BETA;
     const wheelBucket = Bucket.fromBucketName(this, PACKAGE_DEPLOYMENT_BUCKET_ID, PACKAGE_DEPLOYMENT_BUCKET_BETA_NAME);
+    
     const userDataCommands = [
-      'sudo apt update',
-      'sudo apt install -y nginx python3-pip python3-venv awscli certbot python3-certbot-nginx jq',
+      'exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1',
+      'echo "Starting user data script execution"',
+      'sudo apt update && sudo apt install -y nginx python3-pip python3-venv awscli certbot python3-certbot-nginx jq || { echo "Failed to install packages"; exit 1; }',
       'mkdir -p /home/ubuntu/auth-service/src',
       'python3 -m venv /home/ubuntu/auth-service/venv',
       'source /home/ubuntu/auth-service/venv/bin/activate',
       'pip install --upgrade pip',
       'pip install flask-cors gunicorn',
       `secret=$(aws secretsmanager get-secret-value --secret-id ${metricsSecret.secretName} --region us-east-1 --query SecretString --output text)`,
-      `echo "METRICS_USERNAME=$(echo $secret | jq -r '.METRICS_USERNAME')" | sudo tee -a /etc/environment`,
-      `echo "METRICS_PASSWORD=$(echo $secret | jq -r '.METRICS_PASSWORD')" | sudo tee -a /etc/environment`,
-      'echo  "export AWS_DEFAULT_REGION=us-east-1" | sudo tee -a /home/ubuntu/.bashrc',
-      'source /etc/environment',
-      `aws s3 sync s3://${wheelBucket.bucketName}/src /home/ubuntu/auth-service/src`,
-      `aws s3 sync s3://${wheelBucket.bucketName}/wheelhouse /home/ubuntu/auth-service/src/wheels`,
-      `aws s3 cp s3://${wheelBucket.bucketName}/requirements.txt /home/ubuntu/auth-service/`,
-      'pip install --no-index --find-links=/home/ubuntu/auth-service/src/wheels -r /home/ubuntu/auth-service/requirements.txt',
-      'sudo systemctl start nginx',
-      'sudo systemctl enable nginx',
+      'echo "METRICS_USERNAME=$(echo $secret | jq -r \'.METRICS_USERNAME\')" | sudo tee -a /etc/environment',
+      'echo "METRICS_PASSWORD=$(echo $secret | jq -r \'.METRICS_PASSWORD\')" | sudo tee -a /etc/environment',
+      'echo "export AWS_DEFAULT_REGION=us-east-1" | sudo tee -a /home/ubuntu/.bashrc',
       `echo "DOMAIN=${DOMAIN}" | sudo tee -a /etc/environment`,
       `echo "APP_ENV=${appEnv}" | sudo tee -a /etc/environment`,
-      // Nginx configuration
-      `echo "server { \\
-          listen 80; \\
-          server_name ${DOMAIN}; \\
-          location / { \\
-              proxy_pass http://127.0.0.1:8000; \\
-              proxy_set_header Host \\$host; \\
-              proxy_set_header X-Real-IP \\$remote_addr; \\
-              proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for; \\
-              proxy_set_header X-Forwarded-Proto \\$scheme; \\
-          } \\
-      }" | sudo tee /etc/nginx/sites-available/auth-service`,
+      'source /etc/environment',
+      `aws s3 sync s3://${wheelBucket.bucketName}/src /home/ubuntu/auth-service/src || { echo "Failed to sync src directory from S3"; exit 1; }`,
+      `aws s3 sync s3://${wheelBucket.bucketName}/wheelhouse /home/ubuntu/auth-service/src/wheels || { echo "Failed to sync wheelhouse from S3"; exit 1; }`,
+      `aws s3 cp s3://${wheelBucket.bucketName}/requirements.txt /home/ubuntu/auth-service/ || { echo "Failed to copy requirements.txt from S3"; exit 1; }`,
+      'pip install --no-index --find-links=/home/ubuntu/auth-service/src/wheels -r /home/ubuntu/auth-service/requirements.txt || { echo "Failed to install requirements"; exit 1; }',
+      'touch /home/ubuntu/auth-service/src/__init__.py',
+      'sudo systemctl start nginx',
+      'sudo systemctl enable nginx',
+      `echo "server { listen 80; server_name ${DOMAIN}; location / { proxy_pass http://127.0.0.1:8000; proxy_set_header Host \\$host; proxy_set_header X-Real-IP \\$remote_addr; proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto \\$scheme; } }" | sudo tee /etc/nginx/sites-available/auth-service`,
       'sudo ln -sf /etc/nginx/sites-available/auth-service /etc/nginx/sites-enabled/',
       'sudo rm -f /etc/nginx/sites-enabled/default',
       'sudo nginx -t && sudo systemctl restart nginx',
       `sed -i 's/AUTHENTICATION_DDB_TABLE = "user_authentication"/AUTHENTICATION_DDB_TABLE = "${props.dynamoDbTable.tableName}"/g' /home/ubuntu/auth-service/src/constants.py`,
-      // Gunicorn service configuration
       'cat << EOT | sudo tee /etc/systemd/system/auth-service.service',
       '[Unit]',
       'Description=Gunicorn instance to serve auth service',
@@ -92,7 +84,6 @@ export class AuthenticationServiceEc2Instance extends Construct {
       'sudo systemctl start auth-service',
       'sudo systemctl enable auth-service',
       'echo "Created and started auth-service systemd service"',
-      // HTTPS setup script
       'cat << \'EOT\' > /home/ubuntu/setup_https.sh',
       '#!/bin/bash',
       'exec > >(tee -a /home/ubuntu/https_setup.log) 2>&1',
@@ -135,11 +126,14 @@ export class AuthenticationServiceEc2Instance extends Construct {
       'chmod +x /home/ubuntu/setup_https.sh',
       '(crontab -l 2>/dev/null; echo "@reboot /home/ubuntu/setup_https.sh") | crontab -',
       '/home/ubuntu/setup_https.sh',
+      'echo "User data script execution completed"',
     ];
+
     const userData = createUserData(userDataCommands);
+
     this.instance = createDefaultEc2Instance(
       `${AUTHENTICATION_SERVICE_NAME}${DELMITER}EC2Instance`,
-      InstanceType.of(InstanceClass.T2, InstanceSize.NANO).toString(),
+      InstanceType.of(InstanceClass.T2, InstanceSize.MICRO).toString(),
       props.vpc,
       props.securityGroup,
       userData.render(),
@@ -149,7 +143,6 @@ export class AuthenticationServiceEc2Instance extends Construct {
 
     wheelBucket.grantRead(this.instance.role);
     props.dynamoDbTable.grantReadWriteData(this.instance.role);
-    attachSSMPolicyToEC2Instance(this.instance);
     createAndAssignDefaultElasticIp(
       `${AUTHENTICATION_SERVICE_NAME}${DELMITER}EIP`,
       this.instance,
