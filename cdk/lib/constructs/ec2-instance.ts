@@ -52,9 +52,10 @@ export class AuthenticationServiceEc2Instance extends Construct {
       'sudo chown -R ubuntu:ubuntu /home/ubuntu/auth-service/venv',
       'source /home/ubuntu/auth-service/venv/bin/activate',
       
-      // Install Python packages
-      'pip install --upgrade pip',
-      'pip install flask-cors gunicorn',
+      // Upgrade pip and install required packages
+      'pip install --upgrade pip || { echo "Failed to upgrade pip"; exit 1; }',
+      'pip install --upgrade pyopenssl cryptography || { echo "Failed to upgrade pyopenssl and cryptography"; exit 1; }',
+      'pip install flask-cors gunicorn prometheus_flask_exporter || { echo "Failed to install required packages"; exit 1; }',
       
       // Set up environment variables
       `secret=$(aws secretsmanager get-secret-value --secret-id ${metricsSecret.secretName} --region us-east-1 --query SecretString --output text)`,
@@ -135,15 +136,19 @@ export class AuthenticationServiceEc2Instance extends Construct {
       // Run HTTPS setup
       '/home/ubuntu/setup_https.sh',
       
-      // Final permission checks
+      // Ensure correct permissions
       'sudo chown -R ubuntu:ubuntu /home/ubuntu/auth-service',
       'sudo find /home/ubuntu/auth-service -type d -exec chmod 755 {} \\;',
       'sudo find /home/ubuntu/auth-service -type f -exec chmod 644 {} \\;',
+      'sudo chmod +x /home/ubuntu/auth-service/venv/bin/*',
       
       // Start and enable services
       'sudo systemctl daemon-reload',
-      'sudo systemctl start auth-service',
+      'sudo systemctl restart auth-service',
       'sudo systemctl enable auth-service',
+      
+      // Add a check to ensure the service is running
+      'sudo systemctl is-active --quiet auth-service || { echo "auth-service failed to start"; exit 1; }',
       
       // Set up cron job for HTTPS renewal
       '(crontab -l 2>/dev/null; echo "@reboot /home/ubuntu/setup_https.sh") | crontab -',

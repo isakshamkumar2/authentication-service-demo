@@ -16,7 +16,7 @@ google-auth-oauthlib
 flask-httpauth
 flask-cors
 gunicorn
-cryptography
-pyOpenSSL
+pyOpenSSL==23.0.0
+cryptography==39.0.1
 requests==2.32.0
 urllib3==1.26.19
