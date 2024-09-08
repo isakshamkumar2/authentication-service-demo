@@ -13,8 +13,8 @@ pyproject_hooks==1.1.0
 Werkzeug>=2.3.7
 genflowly-lambda-utils
 google-auth-oauthlib
-flask-httpauth
-flask-cors
+flask-httpauth==4.8.0
+flask-cors==5.0.0
 gunicorn
 pyOpenSSL==23.0.0
 cryptography==39.0.1

@@ -37,25 +37,26 @@ export class AuthenticationServiceEc2Instance extends Construct {
     const wheelBucket = Bucket.fromBucketName(this, PACKAGE_DEPLOYMENT_BUCKET_ID, PACKAGE_DEPLOYMENT_BUCKET_BETA_NAME);
     
     const userDataCommands = [
-      'exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1',
-      'echo "Starting user data script execution"',
+      '#!/bin/bash',
+      'set -e',
       'export DEBIAN_FRONTEND=noninteractive',
-      'sudo apt-get update',
-      'sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" nginx python3-pip python3-venv awscli jq || { echo "Failed to install packages"; exit 1; }',
+      'sudo apt-get update && sudo apt-get install -y nginx python3-venv awscli jq',
       
-      // Create directory structure and set permissions
+      // Set up directory structure
       'sudo mkdir -p /home/ubuntu/auth-service/src',
       'sudo chown -R ubuntu:ubuntu /home/ubuntu/auth-service',
       
       // Set up Python virtual environment
       'python3 -m venv /home/ubuntu/auth-service/venv',
-      'sudo chown -R ubuntu:ubuntu /home/ubuntu/auth-service/venv',
       'source /home/ubuntu/auth-service/venv/bin/activate',
       
-      // Upgrade pip and install required packages
-      'pip install --upgrade pip || { echo "Failed to upgrade pip"; exit 1; }',
-      'pip install --upgrade pyopenssl cryptography || { echo "Failed to upgrade pyopenssl and cryptography"; exit 1; }',
-      'pip install flask-cors gunicorn prometheus_flask_exporter || { echo "Failed to install required packages"; exit 1; }',
+      // Sync files from S3
+      `aws s3 sync s3://${wheelBucket.bucketName}/src /home/ubuntu/auth-service/src`,
+      `aws s3 sync s3://${wheelBucket.bucketName}/wheelhouse /home/ubuntu/auth-service/wheels`,
+      `aws s3 cp s3://${wheelBucket.bucketName}/requirements.txt /home/ubuntu/auth-service/`,
+      
+      // Install requirements from wheel files
+      'pip install --no-index --find-links=/home/ubuntu/auth-service/wheels -r /home/ubuntu/auth-service/requirements.txt',
       
       // Set up environment variables
       `secret=$(aws secretsmanager get-secret-value --secret-id ${metricsSecret.secretName} --region us-east-1 --query SecretString --output text)`,
@@ -65,18 +66,6 @@ export class AuthenticationServiceEc2Instance extends Construct {
       `echo "DOMAIN=${DOMAIN}" | sudo tee -a /etc/environment`,
       `echo "APP_ENV=${appEnv}" | sudo tee -a /etc/environment`,
       'source /etc/environment',
-      
-      // Sync files from S3 and set permissions
-      `aws s3 sync s3://${wheelBucket.bucketName}/src /home/ubuntu/auth-service/src || { echo "Failed to sync src directory from S3"; exit 1; }`,
-      `aws s3 sync s3://${wheelBucket.bucketName}/wheelhouse /home/ubuntu/auth-service/src/wheels || { echo "Failed to sync wheelhouse from S3"; exit 1; }`,
-      `aws s3 cp s3://${wheelBucket.bucketName}/requirements.txt /home/ubuntu/auth-service/ || { echo "Failed to copy requirements.txt from S3"; exit 1; }`,
-      'sudo chown -R ubuntu:ubuntu /home/ubuntu/auth-service',
-      
-      // Install requirements
-      'pip install --no-index --find-links=/home/ubuntu/auth-service/src/wheels -r /home/ubuntu/auth-service/requirements.txt || { echo "Failed to install requirements"; exit 1; }',
-      
-      // Create __init__.py file
-      'touch /home/ubuntu/auth-service/src/__init__.py',
       
       // Configure Nginx
       `echo "server { listen 80; server_name ${DOMAIN}; location / { proxy_pass http://127.0.0.1:8000; proxy_set_header Host \\$host; proxy_set_header X-Real-IP \\$remote_addr; proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto \\$scheme; } }" | sudo tee /etc/nginx/sites-available/auth-service`,
@@ -99,61 +88,28 @@ export class AuthenticationServiceEc2Instance extends Construct {
       'WorkingDirectory=/home/ubuntu/auth-service',
       'Environment="PATH=/home/ubuntu/auth-service/venv/bin"',
       'EnvironmentFile=/etc/environment',
-      'ExecStart=/home/ubuntu/auth-service/venv/bin/gunicorn --workers 3 --bind 127.0.0.1:8000 src.app:app --log-level debug --error-logfile /home/ubuntu/auth-service/gunicorn-error.log --access-logfile /home/ubuntu/auth-service/gunicorn-access.log',
+      'ExecStart=/home/ubuntu/auth-service/venv/bin/gunicorn --workers 3 --bind 127.0.0.1:8000 src.app:app',
       'Restart=always',
       '',
       '[Install]',
       'WantedBy=multi-user.target',
       'EOT',
       
-      // Set correct permissions for service file
+      // Set correct permissions
       'sudo chown root:root /etc/systemd/system/auth-service.service',
       'sudo chmod 644 /etc/systemd/system/auth-service.service',
       
-      // Install certbot
-      'sudo apt-get install -y certbot python3-certbot-nginx || { echo "Failed to install certbot"; exit 1; }',
-      
-      // Set up HTTPS script
-      'cat << \'EOT\' > /home/ubuntu/setup_https.sh',
-      '#!/bin/bash',
-      'exec > >(tee -a /home/ubuntu/https_setup.log) 2>&1',
-      'echo "Starting HTTPS setup at $(date)"',
-      'source /etc/environment',
-      'echo "Domain: $DOMAIN"',
-      'if host $DOMAIN | grep -q "has address"; then',
-      '    if sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos --email authentication-beta@genflowly.com; then',
-      '        echo "HTTPS setup completed successfully"',
-      '    else',
-      '        echo "Certificate generation failed. Check DNS and try again."',
-      '    fi',
-      'else',
-      '    echo "Domain $DOMAIN not yet pointing to this instance. HTTPS setup skipped."',
-      'fi',
-      'EOT',
-      'chmod +x /home/ubuntu/setup_https.sh',
-      'sudo chown ubuntu:ubuntu /home/ubuntu/setup_https.sh',
-      
-      // Run HTTPS setup
-      '/home/ubuntu/setup_https.sh',
-      
-      // Ensure correct permissions
-      'sudo chown -R ubuntu:ubuntu /home/ubuntu/auth-service',
-      'sudo find /home/ubuntu/auth-service -type d -exec chmod 755 {} \\;',
-      'sudo find /home/ubuntu/auth-service -type f -exec chmod 644 {} \\;',
-      'sudo chmod +x /home/ubuntu/auth-service/venv/bin/*',
-      
       // Start and enable services
       'sudo systemctl daemon-reload',
-      'sudo systemctl restart auth-service',
+      'sudo systemctl start auth-service',
       'sudo systemctl enable auth-service',
       
-      // Add a check to ensure the service is running
-      'sudo systemctl is-active --quiet auth-service || { echo "auth-service failed to start"; exit 1; }',
+      // Set up HTTPS (optional, depending on your requirements)
+      'sudo apt-get install -y certbot python3-certbot-nginx',
+      'sudo certbot --nginx -d ${DOMAIN} --non-interactive --agree-tos --email your-email@example.com',
       
       // Set up cron job for HTTPS renewal
-      '(crontab -l 2>/dev/null; echo "@reboot /home/ubuntu/setup_https.sh") | crontab -',
-      
-      'echo "User data script execution completed"',
+      '(crontab -l 2>/dev/null; echo "0 12 * * * /usr/bin/certbot renew --quiet") | crontab -',
     ];
 
     const userData = createUserData(userDataCommands);
