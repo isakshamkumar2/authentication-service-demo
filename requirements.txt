@@ -290,11 +290,13 @@ python-dotenv==0.21.1
     # via genflowly-lambda-utils
 python-gemini-api==0.1.2
     # via bardapi
+pyOpenSSL==20.0.1
+
 pyyaml==6.0.1
     # via
     #   genflowly-lambda-utils
     #   responses
-requests==2.31.0
+requests==2.25.1
     # via
     #   bardapi
     #   cachecontrol
@@ -342,7 +344,7 @@ uritemplate==4.1.1
     # via
     #   genflowly-lambda-utils
     #   google-api-python-client
-urllib3==2.0.7
+urllib3==1.26.5
     # via
     #   botocore
     #   genflowly-lambda-utils
